@@ -28,6 +28,7 @@ class SAMRead:
         self.is_forward = True if self.bin_flag[4] == '0' else False
         self.is_reverse = False if self.bin_flag[4] == '0' else True
         self.is_primary = True if self.bin_flag[8] == '0' and self.bin_flag[11] == '0' else False
+        self.mapped_bases = []
 
     # def base_at_pos(self, pos: int) -> str:
     #     """
@@ -106,6 +107,8 @@ class SAMRead:
 
     #     return base
 
+
+
     def base_at_pos(self, pos: int) -> str:
         """
         return the base mapped at a position
@@ -118,11 +121,13 @@ class SAMRead:
         """
 
         base_list = list(self.seq)
-        print(f"Initial list: {len(base_list)}, {base_list}\n")
+        # print(f"Initial list: {len(base_list)}, {base_list}\n")
         
         num = ''
         prev_num = 0
         cigar_list = []
+        if self.cigar == '*':
+            return ""
         for c in self.cigar:
             if c not in 'MDISH':
                 num += c
@@ -147,7 +152,7 @@ class SAMRead:
             clip_idx = cigar_list[-1][1]
             del base_list[clip_idx:]
 
-        print(f"Softclip at end: {len(base_list)}, {base_list}\n")
+        # print(f"Softclip at end: {len(base_list)}, {base_list}\n")
         to_del = []
         for n,l in enumerate(cigar_list):
             if l[0] == 'S':
@@ -159,7 +164,7 @@ class SAMRead:
                 stop_idx = l[1]
                 diff = stop_idx - start_idx
                 # print(start_idx, stop_idx, diff)
-                base_list[start_idx:start_idx] = list(' ' * diff)
+                base_list[start_idx:start_idx] = list('-' * diff)
                 # print(f"after d/i: {len(base_list)}, {base_list}")
                 # break
             elif l[0] == 'I':
@@ -181,15 +186,20 @@ class SAMRead:
             # print(ele)
             del base_list[ele[0]:ele[0]+ele[1]]
 
-        print(f"after del: {len(base_list)}, {base_list}")
+        self.mapped_bases = base_list
+        # print(f"after del: {len(base_list)}, {base_list}")
         base = ''
-        idx = abs(self.pos - pos)
-        base = "".join(base_list[idx])
+        if self.pos <= pos < self.pos + len(base_list):
+            idx = abs(self.pos - pos)
+            base = "".join(base_list[idx])
+            return "" if base == '-' else base
+        else:
+            return ""
 
         #format base before returning
-        base = "" if base == ' ' else base
+        # base = "" if base == ' ' else base
         # base = base if self.is_forward else self.reverse_complement(base)
-        return base
+        # return base
     
     def reverse_complement(self, seq: str) -> str:
         comp_dict = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G', 'N': 'N', '':''}
@@ -198,16 +208,17 @@ class SAMRead:
     def qual_at_pos():
         pass
 
-    def mapped_seq():
-        pass
+    def mapped_seq(self) -> str:
+        flatten_base_list = ["".join(base) for base in self.mapped_bases]
+        return "".join(flatten_base_list) #flatten the list to get the mapped sequence
 
 
 sam_records = [
     # 'ERR11767307.541398\t163\tFusibacter_paucivorans\t1\t60\t68S83M\t=\t314\t464\tCAAGAAACAAACCATAAAGCCAGATATTTTGATAACAATAGTATCTGAGCCTGATAAACTTTTATTTGAGAGTTTGATCCTGGCTCAGGATGAACGCTGGCGGCGTGCCTAACACATGCAAGTTGAGCGATTTACTTCGGTAAAGAGCGGC\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\tNM:i:15\tms:i:136\tAS:i:136\tnn:i:0\ttp:A:P\tcm:i:8\ts1:i:105\ts2:i:0\tde:f:0.1807\trl:i:0\n',
     # 'ERR11767307.1723569\t163\tFusibacter_paucivorans\t1\t60\t60S91M\t=\t376\t529\tAAACCATAAAGCCAGATATTTTGATAACAATAGTATCTGAGCCTGATAAACTTTTATTTGAGAGTTTGATCCTGGCTCAGGATGAACGCTGGCGGCGTGCCTAACACATGCAAGTTGAGCGATTTACTTCGGTAAAGAGCGGCGGACGGGT\tF-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFF\tNM:i:18\tms:i:146\tAS:i:146\tnn:i:0\ttp:A:P\tcm:i:9\ts1:i:117\ts2:i:0\tde:f:0.1978\trl:i:0\n',
     # 'ERR11767307.67699\t89\tFusibacter_paucivorans\t11\t25\t5S60M26D87M\t=\t11\t0\tCCTGGCTCAGGATGAACGCTGGCGGCGTGCCTAACATATGCAAGTTGAGCGATTTACTTCGGTAAAGAGCGGCGGACGGGTGAGTAACGCGTGGGTAACCTACCCTGTACACACGGATAACATACCGAAAGGTATGCTAATACGGGATAAT\tFFFFFFFFFFFF-FFFF-FF-FFFFFFFFFF-FFFFFFFF-FFFFFFFFFF-FFFFFFFFFFFFFFFFFFFF-FFFFFFFF-F-FFFFFFFFFFFFFFFFFFFFFFFFFFF55555555555-F55FFFFFFFFFFFFF5F55FFFFFFF-\tNM:i:59\tms:i:222\tAS:i:186\tnn:i:0\ttp:A:P\tcm:i:9\ts1:i:45\ts2:i:0\tde:f:0.2237\trl:i:0\n',
-    'ERR11767307.11970\t83\tFusibacter_paucivorans\t201\t60\t151M\t=\t1\t-351\tATCTCTTGAATATCAAAGGTGAGCCAGTACAGGATGGACCCGCGTCTGATTAGCTAGTTGGTAAGGTAACGGCTTACCAAGGCGACGATCAGTAGCCGACCTGAGAGGGTGATCGGCCACATTGGAACTGAGACACGGTCCAAACTCCTAC\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\tNM:i:20\tms:i:261\tAS:i:263\tnn:i:1\ttp:A:P\tcm:i:11\ts1:i:103\ts2:i:0\tde:f:0.1325\trl:i:0,\n',
-    # 'ERR11767307.1723509\t163\tFusibacter_paucivorans\t107\t56\t151M\t=\t514\t558\tGGCGGACGGGTGAGTAACGCGTGGGTAACCTACCCTGTACACACGGATAACATACCGAAAGGTATGCTAATACGGGATAATATATTTGAGAGGCATCTCTTGAATATCAAAGGTGAGCCAGTACAGGATGGACCCGCGTCTGATTAGCTAG\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF-FFFFFFFFFFFFFFFFFFF-FFFFFFFFFFFF-FFFFFFFFFFFF-FFFFFFFFFFFFFF-FF-FFFFFFFFFFFFFFFFFF-FFFF\tNM:i:45\tms:i:212\tAS:i:212\tnn:i:0\ttp:A:P\tcm:i:7\ts1:i:68\ts2:i:0\tde:f:0.298\trl:i:0\n',
+    # 'ERR11767307.11970\t83\tFusibacter_paucivorans\t201\t60\t151M\t=\t1\t-351\tATCTCTTGAATATCAAAGGTGAGCCAGTACAGGATGGACCCGCGTCTGATTAGCTAGTTGGTAAGGTAACGGCTTACCAAGGCGACGATCAGTAGCCGACCTGAGAGGGTGATCGGCCACATTGGAACTGAGACACGGTCCAAACTCCTAC\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\tNM:i:20\tms:i:261\tAS:i:263\tnn:i:1\ttp:A:P\tcm:i:11\ts1:i:103\ts2:i:0\tde:f:0.1325\trl:i:0,\n',
+    'ERR11767307.1723509\t163\tFusibacter_paucivorans\t107\t56\t5H146M\t=\t514\t558\tACGGGTGAGTAACGCGTGGGTAACCTACCCTGTACACACGGATAACATACCGAAAGGTATGCTAATACGGGATAATATATTTGAGAGGCATCTCTTGAATATCAAAGGTGAGCCAGTACAGGATGGACCCGCGTCTGATTAGCTAG\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF-FFFFFFFFFFFFFFFFFFF-FFFFFFFFFFFF-FFFFFFFFFFFF-FFFFFFFFFFFFFF-FF-FFFFFFFFFFFFFFFFFF-FFFF\tNM:i:45\tms:i:212\tAS:i:212\tnn:i:0\ttp:A:P\tcm:i:7\ts1:i:68\ts2:i:0\tde:f:0.298\trl:i:0\n',
     # 'ERR11767307.11970\t163\tFusibacter_paucivorans\t1\t60\t91S60M\t=\t201\t351\tTTAAACAGTAGGTTAATTTATATTAAGAAACAAACCATAAAGCCAGATATTTTGATAACAATAGTATCTGAGCCTGATAAACTTTTATTTGAGAGTTTGATCCTGGCTCAGGATGAACGCTGGCGGCGTGCCTAACACATGCAAGTTGAGC\tFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFF5FFFFFFFF5FFFFFFFFFFFFFFFFF\tNM:i:1\tms:i:118\tAS:i:118\tnn:i:0\ttp:A:P\tcm:i:8\ts1:i:103\ts2:i:0\tde:f:0.0167\trl:i:0\n',
     # 'ERR11767307.1284302\t99\tFusibacter_paucivorans\t1\t60\t23S74M26D54M\t=\t530\t680\tTGAGCCTGATAAACTTTTATTTGAGAGTTTGATCCTGGCTCAGGATGAACGCTGGCGGCGTGCCTAACACATGCAAGTTGAGCGATTTACTTCGGTAAAGAGCGGCGGACGGGTGAGTAACGCGTGGGTAACCTACCCTGTACACACGGAT\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\tNM:i:42\tms:i:210\tAS:i:174\tnn:i:0\ttp:A:P\tcm:i:13\ts1:i:101\ts2:i:0\tde:f:0.1318\trl:i:0\n',
     # 'ERR11767307.12471\t163\tFusibacter_paucivorans\t970\t60\t28M1I14M1I107M\t=\t1397\t556\tCTTGACATCCCAATGACATCTCCTTAATCGGAGAGTTCCCTTCGGGGGCATTGGTGACAGGTGGTGCATGGTTGTCGTCAGCTCGTGTCGTGAGATGTTGGGTTAAGTCCCGCAACGAGCGCAACCCTTGTCTTTAGTTGCCATCATTAAG\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFF5FFFFFFFFF\tNM:i:27\tms:i:220\tAS:i:220\tnn:i:0\ttp:A:P\tcm:i:12\ts1:i:124\ts2:i:0\tde:f:0.1788\trl:i:0\n',
@@ -218,8 +229,9 @@ sam_records = [
 for record in sam_records:
     read = SAMRead(record)
 
-pos = 250
+pos = 155
 print(read.qname, pos, read.cigar, read.seq)
 # print(read.bin_flag[2], read.bin_flag[4], read.bin_flag[4], read.bin_flag[8])
 # print(read.is_mapped, read.is_forward, read.is_reverse, read.is_primary)
-print(read.base_at_pos(pos))
+print(repr(read.base_at_pos(pos)))
+print(read.mapped_seq())
