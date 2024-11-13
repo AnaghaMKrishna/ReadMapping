@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 class SAM:
-    def __init__(self, primary_reads:list[SAMRead]):
+    def __init__(self, primary_reads:list[SAMRead], references:dict[str, list[int, int]]):
         """
         initialize the sam records in the SAM file
 
@@ -11,17 +11,27 @@ class SAM:
             file_path: SAM file path
         """
         self.primary_reads = primary_reads
+        self.references = references
 
     @classmethod
     def from_sam(cls, file_path:str) -> SAM:
         primary_reads = []
+        ref_dict = {}
         with open(file_path) as sam_file:
             for line in sam_file:
                 if not line.startswith('@'): 
                     sam_line = SAMRead(line.strip())
                     primary_reads.append(sam_line) if sam_line.is_primary else '' #store only primary reads
+                elif line.startswith('@SQ'):
+                    header_line = line.strip().split('\t')
+                    ref_seq = header_line[1] #value of SN: in @SQ 
+                    ref_len = header_line[2] #value of LN: in @SQ
+                    ref_dict[ref_seq[3:]] = [1, int(ref_len[3:])] #skip SN: and LN:
+                    
+                else:
+                    continue
         # print(primary_reads)
-        sam = cls(primary_reads)  
+        sam = cls(primary_reads, ref_dict)  
         return sam
 
     def reads_at_pos(self, rname:str, pos:int)-> list[SAMRead]:
@@ -42,6 +52,35 @@ class SAM:
 
         # print(base_list, qual_list)
         return base_list, qual_list
+
+    def consensus_at_pos(self, rname:str, pos:int) -> str:
+        bases_at_pos = self.pileup_at_pos(rname, pos)[0]
+
+        return max(bases_at_pos, key=bases_at_pos.count) if bases_at_pos else ""
+    
+    def consensus(self, rname:str) -> str:
+        if rname not in self.references: #if reference does not exist
+            return ""
+        
+        cons_base_list = []
+        ref_start = self.references[rname][0]
+        ref_end = self.references[rname][1]
+        for i in range(ref_start-1, ref_end):
+            cons_base = self.consensus_at_pos(rname, i)
+            cons_base_list.append(cons_base)
+
+        return "".join(cons_base_list) if cons_base_list else "" # empty string if no reads are mapped to rname
+    
+    def best_consensus(self) -> str:
+        best_cons = ""
+        for rname in self.references.keys():
+            cons = self.consensus(rname)
+            if len(cons) > len(best_cons):
+                best_cons = cons
+
+        return best_cons
+
+
 
 
 class SAMRead:
@@ -253,10 +292,13 @@ class SAMRead:
 
 print(SAM.from_sam("../ex11_data/sams/ERR11767307.sam").primary_reads[9].rname)
 sam = SAM.from_sam("../ex11_data/sams/ERR11767307.sam")
-for l in sam.reads_at_pos("Fusibacter_paucivorans", 1100):
+pos = 1100
+for l in sam.reads_at_pos("Fusibacter_paucivorans", pos):
     print(l.qname, l.seq)
-b,q = sam.pileup_at_pos("Fusibacter_paucivorans", 1099)
+b,q = sam.pileup_at_pos("Fusibacter_paucivorans", pos)
 print(b,q)
+print(sam.consensus_at_pos("Fusibacter_paucivorans", pos))
+print(sam.best_consensus())
 
 # sam_records = [
 #     # 'ERR11767307.541398\t163\tFusibacter_paucivorans\t1\t60\t68S83M\t=\t314\t464\tCAAGAAACAAACCATAAAGCCAGATATTTTGATAACAATAGTATCTGAGCCTGATAAACTTTTATTTGAGAGTTTGATCCTGGCTCAGGATGAACGCTGGCGGCGTGCCTAACACATGCAAGTTGAGCGATTTACTTCGGTAAAGAGCGGC\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\tNM:i:15\tms:i:136\tAS:i:136\tnn:i:0\ttp:A:P\tcm:i:8\ts1:i:105\ts2:i:0\tde:f:0.1807\trl:i:0\n',
