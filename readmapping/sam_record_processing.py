@@ -8,79 +8,129 @@ class SAM:
         initialize the sam records in the SAM file
 
         Args:
-            file_path: SAM file path
+            primary_reads: list containing SAMRead object for primary, non header lines in SAM file
+            references: a dictionary of reference name and it's range
         """
         self.primary_reads = primary_reads
         self.references = references
 
     @classmethod
     def from_sam(cls, file_path:str) -> SAM:
+        """
+        creates an instance of SAM class from SAM file
+
+        Args:
+            file_path: SAM file path
+
+        Returns:
+            an instance of the SAM class 
+        """
         primary_reads = []
         ref_dict = {}
         with open(file_path) as sam_file:
             for line in sam_file:
                 if not line.startswith('@'): 
                     sam_line = SAMRead(line.strip())
-                    primary_reads.append(sam_line) if sam_line.is_primary else '' #store only primary reads
+                    if sam_line.is_primary and sam_line.is_mapped:
+                        primary_reads.append(sam_line) #store only primary reads
                 elif line.startswith('@SQ'):
                     header_line = line.strip().split('\t')
                     ref_seq = header_line[1] #value of SN: in @SQ 
                     ref_len = header_line[2] #value of LN: in @SQ
                     ref_dict[ref_seq[3:]] = [1, int(ref_len[3:])] #skip SN: and LN:
-                    
                 else:
                     continue
-        # print(primary_reads)
         sam = cls(primary_reads, ref_dict)  
         return sam
 
     def reads_at_pos(self, rname:str, pos:int)-> list[SAMRead]:
+        """
+        finds all reads mapped at a position on reference
+
+        Args:
+            rname: reference sequence name
+            pos: position relative to the reference
+
+        Returns:
+            a list of read objects mapped at the position
+        """
         reads_list = []
         for read in self.primary_reads:
-            if read.rname == rname and read.read_range[0] <= pos <= read.read_range[1]:
+            if read.rname == rname and read.start <= pos <= read.end:
                 reads_list.append(read)
 
-        # print(reads_pos_list)
         return reads_list
     
     def pileup_at_pos(self, rname:str, pos:int)-> tuple[list[str], list[str]]:
+        """
+        finds all bases and corresponding quality score mapped at a position on reference
+
+        Args:
+            rname: reference sequence name
+            pos: position relative to the reference
+
+        Returns:
+            a tuple of list of mapped bases and list of corresponding quality scores
+        """
         base_list = []
         qual_list = []
         for read in self.reads_at_pos(rname, pos):
-            base_list.append(read.base_at_pos(pos))
-            qual_list.append(read.qual_at_pos(pos))
+                base_list.append(read.base_at_pos(pos))
+                qual_list.append(read.qual_at_pos(pos))
 
-        # print(base_list, qual_list)
         return base_list, qual_list
 
     def consensus_at_pos(self, rname:str, pos:int) -> str:
+        """
+        finds the consensus base at a position on the reference
+
+        Args:
+            rname: reference sequence name
+            pos: position relative to the reference
+
+        Returns:
+            a base with highest count at the position
+        """
         bases_at_pos = self.pileup_at_pos(rname, pos)[0]
 
         return max(bases_at_pos, key=bases_at_pos.count) if bases_at_pos else ""
     
     def consensus(self, rname:str) -> str:
-        if rname not in self.references: #if reference does not exist
+        """
+        consensus sequence for a reference sequence
+
+        Args:
+            rname: reference sequence name
+
+        Returns:
+            consensus sequence of all positions in the reference
+        """
+        if rname not in self.references: #if reference name does not exist
             return ""
-        
         cons_base_list = []
         ref_start = self.references[rname][0]
         ref_end = self.references[rname][1]
-        for i in range(ref_start-1, ref_end):
+        for i in range(ref_start, ref_end + 1):
             cons_base = self.consensus_at_pos(rname, i)
             cons_base_list.append(cons_base)
 
         return "".join(cons_base_list) if cons_base_list else "" # empty string if no reads are mapped to rname
     
     def best_consensus(self) -> str:
+        """
+        finds the best consensus sequence across all reference sequences
+
+        Returns:
+            best consensus sequence
+        """
         best_cons = ""
+        best_rname = ""
         for rname in self.references.keys():
             cons = self.consensus(rname)
             if len(cons) > len(best_cons):
-                best_cons = cons
+                best_rname, best_cons = rname, cons
 
-        return best_cons
-
-
+        return f">{best_rname}_consensus\n{best_cons}"
 
 
 class SAMRead:
@@ -92,18 +142,18 @@ class SAMRead:
             record: aligned read in SAM file
         """
         record = record.strip().split("\t")
-        self.qname = record[0] 
-        self.flag = int(record[1])
-        self.rname = record[2] 
-        self.pos = int(record[3])
-        self.mapq = record[4] 
-        self.cigar = record[5] 
-        self.rnext = record[6] 
-        self.pnext = int(record[7])
-        self.tlen = int(record[8])
-        self.seq = record[9] 
-        self.qual = record[10]
-        self.extras = record[11:]
+        self.qname: str = record[0] 
+        self.flag:int = int(record[1])
+        self.rname:str = record[2] 
+        self.pos:int = int(record[3])
+        self.mapq:str = record[4] 
+        self.cigar:str = record[5] 
+        self.rnext:str = record[6] 
+        self.pnext:int = int(record[7])
+        self.tlen:int = int(record[8])
+        self.seq:str = record[9] 
+        self.qual:str = record[10]
+        self.extras:list[str] = record[11:]
 
         #decode flag attributes
         self.bin_flag = f"{self.flag:012b}"[::-1] #reverse to get LSB at index 0
@@ -112,22 +162,12 @@ class SAMRead:
         self.is_reverse = False if self.bin_flag[4] == '0' else True
         self.is_primary = True if self.bin_flag[8] == '0' and self.bin_flag[11] == '0' else False
         
-        #list of mapped bases in reads if read is mapped
-        self.mapped_bases = self.find_mapped_elements(self.seq) if self.is_mapped else [] #TO DO: update find_mapped_elements to work without args
-        self.mapped_qual = self.find_mapped_elements(self.qual) if self.is_mapped else []
+        #list of mapped bases and quality score of bases in mapped reads
+        self.mapped_bases, self.mapped_qual = self.find_mapped_elements() if self.is_mapped else ([], [])
 
-    @property
-    def read_range(self) -> tuple[int, int]:
-        """
-        find the range of mapped read
-
-        Returns:
-            returns the start and end of reference positions of mapped read  
-        """
-        start = self.pos
-        end = start + len(self.mapped_bases)
-
-        return start, end
+        #calculate read range
+        self.start = self.pos
+        self.end = self.start + len(self.mapped_bases) - 1
         
     def process_cigar(self) -> tuple[list[list[str, int]], int]:
         """
@@ -157,31 +197,28 @@ class SAMRead:
             cigar_list = [[l[0], l[1] - clip_idx] for l in cigar_list]
             return cigar_list, clip_idx
         if cigar_list[-1][0] == 'S':
-            clip_idx = cigar_list[-1][1]
+            clip_idx = cigar_list[-2][1] 
             cigar_list = [[l[0], l[1] - clip_idx] for l in cigar_list]
-            return cigar_list, clip_idx
+            return cigar_list, clip_idx  #make it 0-indexed
         
         return cigar_list, 0
 
-    def find_mapped_elements(self, elements: str) -> list[str]:
+    def find_mapped_elements(self) -> tuple[list[str], list[str]]:
         """
         returns a list of mapped elements relative to the reference
 
-        Args:
-            elements: sequence or quality scores of mapped read
-
         Returns:
-            list containing only mapped elements
+            a tuple of list containing mapped bases and mapped quality scores
         """
 
-        ele_list = list(elements)
+        idx_list = [i for i in range(len(self.seq))]
         cigar_list, clip_idx = self.process_cigar()
 
         #remove soft clipped elements
         if cigar_list[0][0] == 'S':
-            del ele_list[:clip_idx]      
+            del idx_list[:clip_idx]  
         if cigar_list[-1][0] == 'S':
-            del ele_list[clip_idx:]
+            del idx_list[clip_idx:]
 
         to_del = []
         #process the element list according to cigar
@@ -196,22 +233,26 @@ class SAMRead:
                 start_idx = cigar_list[n-1][1]
                 stop_idx = l[1]
                 diff = stop_idx - start_idx
-                ele_list[start_idx:start_idx] = list(' ' * diff)
+                idx_list[start_idx:start_idx] = list(' ' * diff)
 
             elif l[0] == 'I': #combine bases into list to denote insertion - [ele1, [ele2, ele3], ele4]
                 start_idx = cigar_list[n-1][1] - 1
                 stop_idx = l[1] 
                 diff = stop_idx - start_idx - 1
-                ele_list[start_idx] = ele_list[start_idx:stop_idx]
+                idx_list[start_idx] = idx_list[start_idx:stop_idx]
                 to_del.append([start_idx + 1, diff]) #keep track of index and length to remove bases after combining into list
 
-        # print(f"after processing: {len(ele_list)}, {ele_list}\n")
+        # print(f"after processing: {len(idx_list)}, {idx_list}\n")
 
         #remove elements next to insertions
         for ele in to_del[::-1]: #iterate from end to avoid changing list index
-            del ele_list[ele[0]:ele[0]+ele[1]]
-        
-        return ele_list
+            del idx_list[ele[0]:ele[0]+ele[1]]
+
+        #get bases and quality scores for indices present in idx_list
+        self.mapped_bases = [base for idx, base in enumerate(self.seq) if idx in idx_list]
+        self.mapped_qual = [qual for idx, qual in enumerate(self.qual) if idx in idx_list]
+
+        return self.mapped_bases, self.mapped_qual
 
     def base_at_pos(self, pos: int) -> str:
         """
@@ -224,27 +265,20 @@ class SAMRead:
             base at pos
         """
         base = ""
-        base_list = list(self.seq)
 
         # unmapped read
         if not self.is_mapped:
             return ""
 
-        #list conataining mapped bases
-        # base_list = self.find_mapped_elements(self.seq)
-        base_list = self.mapped_bases
-
         #check if pos within the range of mapped read
-        if self.pos <= pos < self.pos + len(base_list):
-            idx = abs(self.pos - pos)
-            base = "".join(base_list[idx])
+        if self.start <= pos <= self.end:
+            idx = abs(self.pos - pos) 
+            # print(idx)
+            # print(len(self.mapped_bases))
+            base = "".join(self.mapped_bases[idx])
             return "" if base == ' ' else base
         else:
             return ""
-    
-    def reverse_complement(self, seq: str) -> str:
-        comp_dict = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G', 'N': 'N', '':''}
-        return "".join([comp_dict[base] for base in seq[::-1]])
 
     def qual_at_pos(self, pos: int) -> str:
         """
@@ -257,19 +291,15 @@ class SAMRead:
             quality at pos
         """
         qual = ""
-        qual_list = list(self.qual)
 
         #unmapped read
         if not self.is_mapped:
             return ""
 
-        #list conataining quality scores corresponding to mapped bases
-        qual_list = self.mapped_qual
-
         #check if pos within the range of mapped read
-        if self.pos <= pos < self.pos + len(qual_list):
-            idx = abs(self.pos - pos)
-            qual = "".join(qual_list[idx])
+        if self.start <= pos <= self.end:
+            idx = abs(self.pos - pos) 
+            qual = "".join(self.mapped_qual[idx])
             return "" if qual == ' ' else qual
         else:
             return ""
@@ -290,15 +320,14 @@ class SAMRead:
         return "".join(base_list)
 
 
-print(SAM.from_sam("../ex11_data/sams/ERR11767307.sam").primary_reads[9].rname)
-sam = SAM.from_sam("../ex11_data/sams/ERR11767307.sam")
-pos = 1100
-for l in sam.reads_at_pos("Fusibacter_paucivorans", pos):
-    print(l.qname, l.seq)
-b,q = sam.pileup_at_pos("Fusibacter_paucivorans", pos)
-print(b,q)
-print(sam.consensus_at_pos("Fusibacter_paucivorans", pos))
-print(sam.best_consensus())
+# sam = SAM.from_sam("../ex11_data/sams/ERR11767307.sam")
+# pos = 1526
+# for l in sam.reads_at_pos("Fusibacter_paucivorans", pos):
+#     print(l.qname, l.cigar, l.flag, l.mapped_bases, len(l.mapped_bases))
+# b,q = sam.pileup_at_pos("Fusibacter_paucivorans", pos)
+# print(b,q)
+# print(sam.consensus_at_pos("Fusibacter_paucivorans", pos))
+# print(sam.best_consensus())
 
 # sam_records = [
 #     # 'ERR11767307.541398\t163\tFusibacter_paucivorans\t1\t60\t68S83M\t=\t314\t464\tCAAGAAACAAACCATAAAGCCAGATATTTTGATAACAATAGTATCTGAGCCTGATAAACTTTTATTTGAGAGTTTGATCCTGGCTCAGGATGAACGCTGGCGGCGTGCCTAACACATGCAAGTTGAGCGATTTACTTCGGTAAAGAGCGGC\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\tNM:i:15\tms:i:136\tAS:i:136\tnn:i:0\ttp:A:P\tcm:i:8\ts1:i:105\ts2:i:0\tde:f:0.1807\trl:i:0\n',
@@ -310,15 +339,16 @@ print(sam.best_consensus())
 #     # 'ERR11767307.1284302\t99\tFusibacter_paucivorans\t1\t60\t23S74M26D54M\t=\t530\t680\tTGAGCCTGATAAACTTTTATTTGAGAGTTTGATCCTGGCTCAGGATGAACGCTGGCGGCGTGCCTAACACATGCAAGTTGAGCGATTTACTTCGGTAAAGAGCGGCGGACGGGTGAGTAACGCGTGGGTAACCTACCCTGTACACACGGAT\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\tNM:i:42\tms:i:210\tAS:i:174\tnn:i:0\ttp:A:P\tcm:i:13\ts1:i:101\ts2:i:0\tde:f:0.1318\trl:i:0\n',
 #     # 'ERR11767307.12471\t163\tFusibacter_paucivorans\t970\t60\t28M1I14M1I107M\t=\t1397\t556\tCTTGACATCCCAATGACATCTCCTTAATCGGAGAGTTCCCTTCGGGGGCATTGGTGACAGGTGGTGCATGGTTGTCGTCAGCTCGTGTCGTGAGATGTTGGGTTAAGTCCCGCAACGAGCGCAACCCTTGTCTTTAGTTGCCATCATTAAG\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFF5FFFFFFFFF\tNM:i:27\tms:i:220\tAS:i:220\tnn:i:0\ttp:A:P\tcm:i:12\ts1:i:124\ts2:i:0\tde:f:0.1788\trl:i:0\n',
 #     # 'ERR11767307.70912\t99\tFusibacter_paucivorans\t541\t60\t151M\t=\t908\t516\tGGATTTACTGGGCGTAAAGGGTGCGTAGGCGGTCTTTCAAGTCAGGAGTGAAAGGCTACGGCTCAACCGTAGTAAGCTCTTGAAACTGGGAGACTTGAGTGCAGGAGAGGAGAGTGGAATTCCTAGTGTAGCGGTGAAATGCGTAGATATT\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFF-FFF\tNM:i:22\tms:i:258\tAS:i:258\tnn:i:0\ttp:A:P\tcm:i:7\ts1:i:100\ts2:i:0\tde:f:0.1457\trl:i:0\n',
-#     'ERR11767307.70912\t147\tFusibacter_paucivorans\t908\t60\t101M2I48M\t=\t541\t-516\tGACCCGCACAAGTAGCGGAGCATGTGGTTTAATTCGAAGCAACGCGAAGAACCTTACCTAAGCTTGACATCCCAATGACATCTCCTTAATCGGAGAGTTCCCTTCGGGGACATTGGTGACAGGTGGTGCATGGTTGTCGTCAGCTCGTGTC\tFFFFFFFFF-FFFFFFFFFFFFFFFFFF-FFFFFFFFFFFFFF-FFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFF55FFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\tNM:i:30\tms:i:228\tAS:i:226\tnn:i:0\ttp:A:P\tcm:i:10\ts1:i:100\ts2:i:0\tde:f:0.1933\trl:i:0\n'
+#     # 'ERR11767307.70912\t147\tFusibacter_paucivorans\t908\t60\t101M2I48M\t=\t541\t-516\tGACCCGCACAAGTAGCGGAGCATGTGGTTTAATTCGAAGCAACGCGAAGAACCTTACCTAAGCTTGACATCCCAATGACATCTCCTTAATCGGAGAGTTCCCTTCGGGGACATTGGTGACAGGTGGTGCATGGTTGTCGTCAGCTCGTGTC\tFFFFFFFFF-FFFFFFFFFFFFFFFFFF-FFFFFFFFFFFFFF-FFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFF55FFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\tNM:i:30\tms:i:228\tAS:i:226\tnn:i:0\ttp:A:P\tcm:i:10\ts1:i:100\ts2:i:0\tde:f:0.1933\trl:i:0\n',
+#     'ERR11767307.541847\t83\tFusibacter_paucivorans\t1430\t1\t96M55S\t=\t959\t-567\tAACCTTTTGGAAGAAGTCGTCGAAGGTGGAATCAATAACTGGGGTGAAGTCGTAACAAGGTAGCCGTATCGGAAGGTGCGGCTGGATCACCTCCTTTCTAAGGAGAATTACCTACTGTTTAATTTTGAGGGTTCGTTTTTACGAATACTCA\tFFFFFFFFFFFFFFFFFFF55FFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFF\tNM:i:13\tms:i:166\tAS:i:166\tnn:i:0\ttp:A:P\tcm:i:8\ts1:i:124\ts2:i:108\tde:f:0.1354\trl:i:0'
 # ]
 
 # for record in sam_records:
 #     read = SAMRead(record)
 
-# pos = 1006
+# pos = 1525
 # print(read.qname, pos, read.cigar, read.seq)
 # print(repr(read.base_at_pos(pos)))
 # print(repr(read.qual_at_pos(pos)))
 # print(read.mapped_seq())
-# print(read.read_range)
+# print(read.start, read.end)
