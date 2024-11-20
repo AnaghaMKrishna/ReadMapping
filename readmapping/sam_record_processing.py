@@ -75,8 +75,8 @@ class SAM:
         base_list = []
         qual_list = []
         for read in self.reads_at_pos(rname, pos):
-                base_list.append(read.base_at_pos(pos))
-                qual_list.append(read.qual_at_pos(pos))
+            base_list.append(read.base_at_pos(pos))
+            qual_list.append(read.qual_at_pos(pos))
 
         return base_list, qual_list
 
@@ -91,9 +91,25 @@ class SAM:
         Returns:
             a base with highest count at the position
         """
+        
         bases_at_pos = self.pileup_at_pos(rname, pos)[0]
+        base_count_dict = {base: bases_at_pos.count(base) for base in bases_at_pos}
+        base_counts = sorted(base_count_dict.items(), key=lambda item: item[1]) #sort based on counts
 
-        return max(bases_at_pos, key=bases_at_pos.count) if bases_at_pos else ""
+        if len(base_counts) > 1: #multiple bases
+            for base, count in base_counts:
+                if not count == base_counts[-1][1]: #check if count is equal to max_count
+                    continue
+                if base_counts[-1][1] == base_counts[-2][1]: #tie between bases
+                    return "N"
+                if count > 0.5 * len(bases_at_pos): #call base with >50% majority
+                    return base
+                else: #no majority base
+                    return "N"
+        elif len(base_counts) == 1: #all reads agree with the base
+            return base_counts[0][0]
+
+        return "" #no reads mapped or rname does not exist
     
     def consensus(self, rname:str) -> str:
         """
@@ -110,10 +126,9 @@ class SAM:
         cons_base_list = []
         ref_start = self.references[rname][0]
         ref_end = self.references[rname][1]
-        for i in range(ref_start, ref_end + 1):
+        for i in range(ref_start, ref_end + 1): #1-base indexing
             cons_base = self.consensus_at_pos(rname, i)
             cons_base_list.append(cons_base)
-
         return "".join(cons_base_list) if cons_base_list else "" # empty string if no reads are mapped to rname
     
     def best_consensus(self) -> str:
@@ -211,14 +226,20 @@ class SAMRead:
             a tuple of list containing mapped bases and mapped quality scores
         """
 
-        idx_list = [i for i in range(len(self.seq))]
+        # idx_list = [i for i in range(len(self.seq))]
+        base_list = [base for base in self.seq]
+        qual_list = [qual for qual in self.qual]
         cigar_list, clip_idx = self.process_cigar()
 
         #remove soft clipped elements
         if cigar_list[0][0] == 'S':
-            del idx_list[:clip_idx]  
+            # del idx_list[:clip_idx] 
+            del base_list[:clip_idx]
+            del qual_list[:clip_idx]
         if cigar_list[-1][0] == 'S':
-            del idx_list[clip_idx:]
+            # del idx_list[clip_idx:]
+            del base_list[clip_idx:]
+            del qual_list[clip_idx:]
 
         to_del = []
         #process the element list according to cigar
@@ -233,24 +254,36 @@ class SAMRead:
                 start_idx = cigar_list[n-1][1]
                 stop_idx = l[1]
                 diff = stop_idx - start_idx
-                idx_list[start_idx:start_idx] = list(' ' * diff)
+                # idx_list[start_idx:start_idx] = list(' ' * diff)
+                base_list[start_idx:start_idx] = list(' ' * diff)
+                qual_list[start_idx:start_idx] = list(' ' * diff)
 
             elif l[0] == 'I': #combine bases into list to denote insertion - [ele1, [ele2, ele3], ele4]
                 start_idx = cigar_list[n-1][1] - 1
                 stop_idx = l[1] 
                 diff = stop_idx - start_idx - 1
-                idx_list[start_idx] = idx_list[start_idx:stop_idx]
+                # idx_list[start_idx] = idx_list[start_idx:stop_idx]
+                base_list[start_idx] = base_list[start_idx:stop_idx]
+                qual_list[start_idx] = qual_list[start_idx:stop_idx]
                 to_del.append([start_idx + 1, diff]) #keep track of index and length to remove bases after combining into list
 
         # print(f"after processing: {len(idx_list)}, {idx_list}\n")
 
         #remove elements next to insertions
         for ele in to_del[::-1]: #iterate from end to avoid changing list index
-            del idx_list[ele[0]:ele[0]+ele[1]]
+            # del idx_list[ele[0]:ele[0]+ele[1]]
+            del base_list[ele[0]:ele[0]+ele[1]]
+            del qual_list[ele[0]:ele[0]+ele[1]]
+
+        # print(idx_list)
+        # print(base_list)
+        # print(qual_list)
 
         #get bases and quality scores for indices present in idx_list
-        self.mapped_bases = [base for idx, base in enumerate(self.seq) if idx in idx_list]
-        self.mapped_qual = [qual for idx, qual in enumerate(self.qual) if idx in idx_list]
+        # self.mapped_bases = [base for idx, base in enumerate(self.seq) if idx in idx_list]
+        self.mapped_bases = base_list
+        self.mapped_qual = qual_list
+        # self.mapped_qual = [qual for idx, qual in enumerate(self.qual) if idx in idx_list]
 
         return self.mapped_bases, self.mapped_qual
 
@@ -319,15 +352,18 @@ class SAMRead:
             base_list = ["-" if base == " " else base for base in base_list] #replace deletions " " with "-"
         return "".join(base_list)
 
-
+# expected = "AGAGTTTGATCCTGGCTCAGGATGAACGCTGGCGGCGTGCCTAACACATGCAAGTTGAGCGATTTACTTCGGTAAAGAGCGGCGGACGGGTGAGTAACGCGTGGGTAACCTACCCTGTACACACGGATAACATACCGAAAGGTATGCTAATACGGGATAATATATTTGAGAGGCATCTCTTGAATATCAAAGGTGAGCCAGTACAGGATGGACCCGCGTCTGATTAGCTAGTTGGTAAGGTAACGGCTTACCAAGGCGACGATCAGTAGCCGACCTGAGAGGGTGATCGGCCACATTGGAACTGAGACACGGTCCAAACTCCTACGGGAGGCAGCAGTGGGGAATATTGCACAATGGGCGAAAGCCTGATGCAGCAACGCCGCGTGAGTGATGAAGGCCTTCGGGTCGTAAAACTCTGTCCTCAAGGAAGATAATGACGGTACTTGAGGAGGAAGCCCCGGCTAACTACGTGCCAGCAGCCGCGGTAATACGTAGGGGGCTAGCGTTATCCGGATTTACTGGGCGTAAAGGGTGCGTAGGCGGTCTTTCAAGTCAGGAGTGAAAGGCTACGGCTCAACCGTAGTAAGCTCTTGAAACTGGGAGACTTGAGTGCAGGAGAGGAGAGTGGAATTCCTAGTGTAGCGGTGAAATGCGTAGATATTAGGAGGAACACCAGTTGCGAAGGCGGCTCTCTGGACTGTAACTGACGCTGAGGCACGAAAGCGTGGGGAGCAAACAGGATTAGATACCCTGGTAGTCCACGCTGTAAACGATGAGTACTAGGTGTCGGGGGTTACCCNTCGGTGCCGCAGCTAACGCATTAAGTACTCCGCCTGGGAAGTACGCTCGCAAGAGTGAAACTCAAAGGAATTGACGGGGACCCGCACAAGTAGCGGAGCATGTGGTTTAATTCGAAGCAACGCGAAGAACCTTACCTAAGCTTGACATCCCAATGACATCTCCTTAANGGAGAGTTCCCTTNGGGACATTGGTGACAGGTGGTGCATGGTTGTCGTCAGCTCGTGTCGTGAGATGTTGGGTTAAGTCCCGCAACGAGCGCAACCCTTGTCTTTAGTTGCCATCATTAAGTTGGGCACTCTAGAGAGACTGCCAGGGATAACCTGGAGGAAGGTGGGGATGACGTCAAATCATCATGCCCCTTATGCTTAGGGCTACACACGTGCTACAATGGGTAGTACAGAGGGTTGCCAAGCCGTAAGGTGGAGCTAATCCNCTTAAAGCTACTCTCAGTTCGGATTGTAGGCTGAAACTCGCCTACATGAAGCTGGAGTTACTAGTAATCGCAGATCAGAATGCTGCGGTGAATGCGTTCCCGGGTCTTGTACACACCGCCCGTCACACCACGGGAGTTGGAGACGCCCGAAGCCGATTATCTAACCTTTTGGAAGAAGTCGTCGAAGGTGGAATCAATAACTGGGGTGAAGTCGTAACAAGGTAGCCGTATCGGAAGGTGCGGCTGGATCACCTCCTT"
 # sam = SAM.from_sam("../ex11_data/sams/ERR11767307.sam")
-# pos = 1526
+# pos = 1266
 # for l in sam.reads_at_pos("Fusibacter_paucivorans", pos):
 #     print(l.qname, l.cigar, l.flag, l.mapped_bases, len(l.mapped_bases))
 # b,q = sam.pileup_at_pos("Fusibacter_paucivorans", pos)
 # print(b,q)
 # print(sam.consensus_at_pos("Fusibacter_paucivorans", pos))
+# print(sam.consensus("Fusibacter_paucivorans"))
+
 # print(sam.best_consensus())
+# print(expected == sam.best_consensus())
 
 # sam_records = [
 #     # 'ERR11767307.541398\t163\tFusibacter_paucivorans\t1\t60\t68S83M\t=\t314\t464\tCAAGAAACAAACCATAAAGCCAGATATTTTGATAACAATAGTATCTGAGCCTGATAAACTTTTATTTGAGAGTTTGATCCTGGCTCAGGATGAACGCTGGCGGCGTGCCTAACACATGCAAGTTGAGCGATTTACTTCGGTAAAGAGCGGC\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\tNM:i:15\tms:i:136\tAS:i:136\tnn:i:0\ttp:A:P\tcm:i:8\ts1:i:105\ts2:i:0\tde:f:0.1807\trl:i:0\n',
@@ -337,18 +373,20 @@ class SAMRead:
 #     # 'ERR11767307.1723509\t163\tFusibacter_paucivorans\t107\t56\t5H146M\t=\t514\t558\tACGGGTGAGTAACGCGTGGGTAACCTACCCTGTACACACGGATAACATACCGAAAGGTATGCTAATACGGGATAATATATTTGAGAGGCATCTCTTGAATATCAAAGGTGAGCCAGTACAGGATGGACCCGCGTCTGATTAGCTAG\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF-FFFFFFFFFFFFFFFFFFF-FFFFFFFFFFFF-FFFFFFFFFFFF-FFFFFFFFFFFFFF-FF-FFFFFFFFFFFFFFFFFF-FFFF\tNM:i:45\tms:i:212\tAS:i:212\tnn:i:0\ttp:A:P\tcm:i:7\ts1:i:68\ts2:i:0\tde:f:0.298\trl:i:0\n',
 #     # 'ERR11767307.11970\t163\tFusibacter_paucivorans\t1\t60\t91S60M\t=\t201\t351\tTTAAACAGTAGGTTAATTTATATTAAGAAACAAACCATAAAGCCAGATATTTTGATAACAATAGTATCTGAGCCTGATAAACTTTTATTTGAGAGTTTGATCCTGGCTCAGGATGAACGCTGGCGGCGTGCCTAACACATGCAAGTTGAGC\tFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFF5FFFFFFFF5FFFFFFFFFFFFFFFFF\tNM:i:1\tms:i:118\tAS:i:118\tnn:i:0\ttp:A:P\tcm:i:8\ts1:i:103\ts2:i:0\tde:f:0.0167\trl:i:0\n',
 #     # 'ERR11767307.1284302\t99\tFusibacter_paucivorans\t1\t60\t23S74M26D54M\t=\t530\t680\tTGAGCCTGATAAACTTTTATTTGAGAGTTTGATCCTGGCTCAGGATGAACGCTGGCGGCGTGCCTAACACATGCAAGTTGAGCGATTTACTTCGGTAAAGAGCGGCGGACGGGTGAGTAACGCGTGGGTAACCTACCCTGTACACACGGAT\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\tNM:i:42\tms:i:210\tAS:i:174\tnn:i:0\ttp:A:P\tcm:i:13\ts1:i:101\ts2:i:0\tde:f:0.1318\trl:i:0\n',
-#     # 'ERR11767307.12471\t163\tFusibacter_paucivorans\t970\t60\t28M1I14M1I107M\t=\t1397\t556\tCTTGACATCCCAATGACATCTCCTTAATCGGAGAGTTCCCTTCGGGGGCATTGGTGACAGGTGGTGCATGGTTGTCGTCAGCTCGTGTCGTGAGATGTTGGGTTAAGTCCCGCAACGAGCGCAACCCTTGTCTTTAGTTGCCATCATTAAG\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFF5FFFFFFFFF\tNM:i:27\tms:i:220\tAS:i:220\tnn:i:0\ttp:A:P\tcm:i:12\ts1:i:124\ts2:i:0\tde:f:0.1788\trl:i:0\n',
+#     'ERR11767307.12471\t163\tFusibacter_paucivorans\t970\t60\t28M1I14M1I107M\t=\t1397\t556\tCTTGACATCCCAATGACATCTCCTTAATCGGAGAGTTCCCTTCGGGGGCATTGGTGACAGGTGGTGCATGGTTGTCGTCAGCTCGTGTCGTGAGATGTTGGGTTAAGTCCCGCAACGAGCGCAACCCTTGTCTTTAGTTGCCATCATTAAG\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFF5FFFFFFFFF\tNM:i:27\tms:i:220\tAS:i:220\tnn:i:0\ttp:A:P\tcm:i:12\ts1:i:124\ts2:i:0\tde:f:0.1788\trl:i:0\n',
 #     # 'ERR11767307.70912\t99\tFusibacter_paucivorans\t541\t60\t151M\t=\t908\t516\tGGATTTACTGGGCGTAAAGGGTGCGTAGGCGGTCTTTCAAGTCAGGAGTGAAAGGCTACGGCTCAACCGTAGTAAGCTCTTGAAACTGGGAGACTTGAGTGCAGGAGAGGAGAGTGGAATTCCTAGTGTAGCGGTGAAATGCGTAGATATT\tFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFF-FFF\tNM:i:22\tms:i:258\tAS:i:258\tnn:i:0\ttp:A:P\tcm:i:7\ts1:i:100\ts2:i:0\tde:f:0.1457\trl:i:0\n',
 #     # 'ERR11767307.70912\t147\tFusibacter_paucivorans\t908\t60\t101M2I48M\t=\t541\t-516\tGACCCGCACAAGTAGCGGAGCATGTGGTTTAATTCGAAGCAACGCGAAGAACCTTACCTAAGCTTGACATCCCAATGACATCTCCTTAATCGGAGAGTTCCCTTCGGGGACATTGGTGACAGGTGGTGCATGGTTGTCGTCAGCTCGTGTC\tFFFFFFFFF-FFFFFFFFFFFFFFFFFF-FFFFFFFFFFFFFF-FFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFF55FFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\tNM:i:30\tms:i:228\tAS:i:226\tnn:i:0\ttp:A:P\tcm:i:10\ts1:i:100\ts2:i:0\tde:f:0.1933\trl:i:0\n',
-#     'ERR11767307.541847\t83\tFusibacter_paucivorans\t1430\t1\t96M55S\t=\t959\t-567\tAACCTTTTGGAAGAAGTCGTCGAAGGTGGAATCAATAACTGGGGTGAAGTCGTAACAAGGTAGCCGTATCGGAAGGTGCGGCTGGATCACCTCCTTTCTAAGGAGAATTACCTACTGTTTAATTTTGAGGGTTCGTTTTTACGAATACTCA\tFFFFFFFFFFFFFFFFFFF55FFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFF\tNM:i:13\tms:i:166\tAS:i:166\tnn:i:0\ttp:A:P\tcm:i:8\ts1:i:124\ts2:i:108\tde:f:0.1354\trl:i:0'
+#     # 'ERR11767307.541847\t83\tFusibacter_paucivorans\t1430\t1\t96M55S\t=\t959\t-567\tAACCTTTTGGAAGAAGTCGTCGAAGGTGGAATCAATAACTGGGGTGAAGTCGTAACAAGGTAGCCGTATCGGAAGGTGCGGCTGGATCACCTCCTTTCTAAGGAGAATTACCTACTGTTTAATTTTGAGGGTTCGTTTTTACGAATACTCA\tFFFFFFFFFFFFFFFFFFF55FFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5FFFFFFFFFFFFFFFFFFFFFF\tNM:i:13\tms:i:166\tAS:i:166\tnn:i:0\ttp:A:P\tcm:i:8\ts1:i:124\ts2:i:108\tde:f:0.1354\trl:i:0'
 # ]
 
 # for record in sam_records:
 #     read = SAMRead(record)
 
-# pos = 1525
+# pos = 997
 # print(read.qname, pos, read.cigar, read.seq)
 # print(repr(read.base_at_pos(pos)))
 # print(repr(read.qual_at_pos(pos)))
 # print(read.mapped_seq())
 # print(read.start, read.end)
+
+# AGAGTTTGATCCTGGCTCAGGATGAACGCTGGCGGCGTGCCTAACACATGCAAGTTGAGCGATTTACTTCGGTAAAGAGCGGCGGACGGGTGAGTAACGCGTGGGTAACCTACCCTGTACACACGGATAACATACCGAAAGGTATGCTAATACGGGATAATATATTTGAGAGGCATCTCTTGAATATCAAAGGTGAGCCAGTACAGGATGGACCCGCGTCTGATTAGCTAGTTGGTAAGGTAACGGCTTACCAAGGCGACGATCAGTAGCCGACCTGAGAGGGTGATCGGCCACATTGGAACTGAGACACGGTCCAAACTCCTACGGGAGGCAGCAGTGGGGAATATTGCACAATGGGCGAAAGCCTGATGCAGCAACGCCGCGTGAGTGATGAAGGCCTTCGGGTCGTAAAACTCTGTCCTCAAGGAAGATAATGACGGTACTTGAGGAGGAAGCCCCGGCTAACTACGTGCCAGCAGCCGCGGTAATACGTAGGGGGCTAGCGTTATCCGGATTTACTGGGCGTAAAGGGTGCGTAGGCGGTCTTTCAAGTCAGGAGTGAAAGGCTACGGCTCAACCGTAGTAAGCTCTTGAAACTGGGAGACTTGAGTGCAGGAGAGGAGAGTGGAATTCCTAGTGTAGCGGTGAAATGCGTAGATATTAGGAGGAACACCAGTTGCGAAGGCGGCTCTCTGGACTGTAACTGACGCTGAGGCACGAAAGCGTGGGGAGCAAACAGGATTAGATACCCTGGTAGTCCACGCTGTAAACGATGAGTACTAGGTGTCGGGGGTTACCCNTCGGTGCCGCAGCTAACGCATTAAGTACTCCGCCTGGGAAGTACGCTCGCAAGAGTGAAACTCAAAGGAATTGACGGGGACCCGCACAAGTAGCGGAGCATGTGGTTTAATTCGAAGCAACGCGAAGAACCTTACCTAAGCTTGACATCCCAATGACATCTCCTTAANGGAGAGTTCCCTTNGGGACATTGGTGACAGGTGGTGCATGGTTGTCGTCAGCTCGTGTCGTGAGATGTTGGGTTAAGTCCCGCAACGAGCGCAACCCTTGTCTTTAGTTGCCATCATTAAGTTGGGCACTCTAGAGAGACTGCCAGGGATAACCTGGAGGAAGGTGGGGATGACGTCAAATCATCATGCCCCTTATGCTTAGGGCTACACACGTGCTACAATGGGTAGTACAGAGGGTTGCCAAGCCGTAAGGTGGAGCTAATCCNCTTAAAGCTACTCTCAGTTCGGATTGTAGGCTGAAACTCGCCTACATGAAGCTGGAGTTACTAGTAATCGCAGATCAGAATGCTGCGGTGAATGCGTTCCCGGGTCTTGTACACACCGCCCGTCACACCACGGGAGTTGGAGACGCCCGAAGCCGATTATCTAACCTTTTGGAAGAAGTCGTCGAAGGTGGAATCAATAACTGGGGTGAAGTCGTAACAAGGTAGCCGTATCGGAAGGTGCGGCTGGATCACCTCCTT
