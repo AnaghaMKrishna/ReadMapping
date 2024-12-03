@@ -2,10 +2,11 @@
 
 import argparse
 import subprocess
+from collections import defaultdict
+from tempfile import TemporaryDirectory, NamedTemporaryFile
 import os
-import tempfile
 import re
-from readmapping import sam_record_processing, ispcr, nw
+from readmapping import process_sam, ispcr, nw
 
 def reverse_complement(string:str) -> str:
     """
@@ -26,151 +27,239 @@ def reverse_complement(string:str) -> str:
     }
     return "".join(complement_dict.get(base) for base in string[::-1])
 
-#accept and parse command-line arguments
-parser = argparse.ArgumentParser(prog="magop.py", 
-                                 description=f'''Infer phylogenetic relationship among given organisms using paired-end reads or assemblies\n
-                                        Usage: magop.py [-a ASSEMBLY [ASSEMBLY ...]] -p PRIMERS [-r READS [READS ...]] [-s REF_SEQS]''')
+def handle_assemblies(primer_path:str, assemblies_path:list[str], max_amplicon_size:int) -> list[str]:
+    """
+    perform isPCR to extract amplicons from assembly files
 
-assembly_files = parser.add_argument(
-    "-a", "--assemblies",
-    help="Assembly files as space separated list or directory conatining them in FASTA format",
-    dest="assemblies",
-    type=str,
-    nargs='*',
-    required=False
-)
+    Args:
+        primer_path: path to FASTA formatted primer file
+        assemblies_path: path to FASTA formatted assembly files
 
-read_files = parser.add_argument(
-    "-r", "--reads",
-    help="PE Illumina reads as space separated list or directory conatining them in FASTQ format",
-    dest="reads",
-    type=str,
-    nargs='*',
-    required=False
-)
-
-primer_file = parser.add_argument(
-    "-p", "--primer-file",
-    help="Path to the primer file",
-    dest="primer",
-    type=str,
-    nargs=1,
-    required=True
-)
-
-ref_file = parser.add_argument(
-    "-s", "--reference",
-    help="File path to Reference FASTA. Mandatory with FASTQ file inputs",
-    dest="ref",
-    type=str,
-    nargs='*',
-    required=False
-)
-
-
-args = parser.parse_args()
-amplicon_list = []
-
-# print(args.assemblies, args.reads, args.primer, args.ref)
-if args.assemblies:
-    for assembly_file in args.assemblies:
-        # print(assembly_file)
-        amplicons = ispcr.ispcr(args.primer[0], assembly_file, 2000) 
+    Returns:
+        list of amplicons extracted from assemblies
+    """
+    assembly_amplicons = []
+    for assembly_file in assemblies_path:
+        amplicons = ispcr.ispcr(primer_path, assembly_file, max_amplicon_size) 
         asm_amp_seq = amplicons.split('\n')[-1] #get one amplicon
         asm_amp_header = amplicons.split('\n')[-2].split(':')[0]
-        amplicon_list.append(f"{asm_amp_header}\n{asm_amp_seq}")
-    # print(amplicon_list)
-        # break
+        assembly_amplicons.append(f"{asm_amp_header}\n{asm_amp_seq}")
+    
+    return assembly_amplicons
 
+def handle_reads(primer_path:str, reads_path:list[str], ref_path:str, max_amplicon_size:int) -> list[str]:
+    """
+    perform isPCR on consensus sequence obtained from paired-end read files
 
-if args.reads:
-    if not args.ref:
-        parser.error("Reference file is mandatory with FASTQ input")
-    matching_reads = {}
-    for read_file in args.reads:
+    Args:
+        primer_path: path to FASTA formatted primer file
+        reads_path: path to FASTQ formatted read files
+
+    Returns:
+        list of amplicons extracted from read files
+    """
+    read_amplicons = []
+    matching_reads = defaultdict(list)
+
+    #extract accession and match paired read files
+    for read_file in reads_path:
         accession = (re.findall(r"[A-Za-z0-9]*/*([A-Za-z0-9]+)_[12].fastq", read_file))[0]
-
-        if accession in matching_reads:
-            matching_reads[accession].append(read_file)
-        else:
-            matching_reads[accession] = [read_file]
-    # print(matching_reads)
+        matching_reads[accession].append(read_file)
     for accession, pe_reads in matching_reads.items():
         if len(pe_reads) != 2 or ("_1" not in pe_reads[0] and "_2" not in pe_reads[1]): #error if reads are not paired
-            parser.error(f"Read files for {accession} is not paired. Input paired-end FASTQ files")
-        
+            raise Exception(f"Read files for {accession} is not paired. Input paired-end FASTQ files")        
 
-    ref_16S = "ex11_data/refs/16S.fna"
+    with TemporaryDirectory() as sam_tempdir:
+        for accession, pe_reads in matching_reads.items():
+            cmd_list = ["minimap2", "-ax", "sr", "-B", "0", "-k", "10", ref_path, pe_reads[0], pe_reads[1]]
+            map_output = subprocess.run(cmd_list, capture_output=True, text=True)
 
-    for accession, pe_reads in matching_reads.items():
-        # print(args.ref[0], pe_reads[0], pe_reads[1])
-        cmd_list = ["minimap2", "-ax", "sr", "-B", "0", "-k", "10", args.ref[0], pe_reads[0], pe_reads[1]]
-        map_output = subprocess.run(cmd_list, capture_output=True, text=True)
+            #save SAM files in temporary directory
+            sam_path = os.path.join(sam_tempdir, f"{accession}.sam")
+            if map_output.returncode == 0:
+                with open(sam_path, "w") as sam_writer:
+                    sam_writer.write(map_output.stdout)
+                    sam = process_sam.SAM.from_sam(sam_path)
+                    consensus_str = sam.best_consensus()
 
-        if map_output.returncode == 0:
-            with open(f"ex12_data/sams/{accession}.sam", "w") as sam_writer: #delete the folder and update to tempdir
-                sam_writer.write(map_output.stdout)
-        else:
-            raise Exception("Mapping of reads returned non-zero exit code")
+                    #write consensus sequence to temporary file
+                    with NamedTemporaryFile(mode='t+w') as f_cons:
+                        f_cons.write(consensus_str)
+                        f_cons.seek(0)
+                        amplicons = ispcr.ispcr(primer_path, f_cons.name, max_amplicon_size) 
+                        amplicon_v4 = amplicons.split('\n')[-1] #get one amplicon
+                        read_amplicons.append(f">{accession}\n{amplicon_v4}")
 
-        sam_path = f"ex12_data/sams/{accession}.sam"
-        sam = sam_record_processing.SAM.from_sam(sam_path)
-        consensus_str = sam.best_consensus()
-        # print(consensus_str)
+            else:
+                raise Exception(f"Mapping of reads returned non-zero exit code:\n{map_output.stderr}")    
+    
+    return read_amplicons
 
-        
-        with tempfile.NamedTemporaryFile(mode='t+w') as f_cons:
-            f_cons.write(consensus_str)
-            f_cons.seek(0)
-            
-            #perform isPCR to extract v4 region from 16S
-            amplicons = ispcr.ispcr(args.primer[0], f_cons.name, 2000) 
-            amplicon_v4 = amplicons.split('\n')[-1] #get one amplicon
-            amplicon_list.append(f">{accession}\n{amplicon_v4}")
-            # print(f"{accession} amplicon: {amplicon_v4}")
-            
+def handle_references(primer_path:str, ref_path:list[str], max_amplicon_size:int) -> list[str]:
+    """
+    perform isPCR to extract amplicons from reference file
 
-    # isPCR reference v4 sequences
-    ref_amplicons = ispcr.ispcr(args.primer[0], args.ref[0], 2000)
+    Args:
+        primer_path: path to FASTA formatted primer file
+        ref_path: path to multi-FASTA reference file
 
-    for ref_amp in ref_amplicons.split('\n'):
+    Returns:
+        list of amplicons extracted from reference sequences
+    """
+    ref_amplicons = []
+    amplicons = ispcr.ispcr(primer_path, ref_path, max_amplicon_size)
+
+    for ref_amp in amplicons.split('\n'):
         if ref_amp.startswith('>'):
             ref_header = ""
             ref_header = ref_amp.split(':')[0]
         else:
-            amplicon_list.append(f"{ref_header}\n{ref_amp}")
-    # print(ref_amplicons)
+            ref_amplicons.append(f"{ref_header}\n{ref_amp}")
+    
+    return ref_amplicons
 
-    # print(amplicon_list)
+def orient_amplicons(amplicon_list: list[str], match: int, mismatch: int, gap: int)-> list[str]:
+    """
+    orient all amplicons in same direction
 
-    aligned_amplicons = []
+    Args:
+        amplicon_list: list containing extracted amplicons
+        match: match score
+        mismatch: mismatch penalty
+        gap: gap penalty
+
+    Returns:
+        list of oriented amplicons
+    """
+
+    oriented_amplicons = []
     for amplicon in amplicon_list:
         _, anchor_seq = amplicon_list[0].split('\n')
         amp_header, amp_seq = amplicon.split('\n')
-        # print(anchor_seq, amp_header, amp_seq)
-        _, score = nw.needleman_wunsch(amp_seq, anchor_seq, 1, -1, -1)
-        _, rev_score = nw.needleman_wunsch(reverse_complement(amp_seq), anchor_seq, 1, -1, -1)
+
+        _, score = nw.needleman_wunsch(amp_seq, anchor_seq, match, mismatch, gap)
+        _, rev_score = nw.needleman_wunsch(reverse_complement(amp_seq), anchor_seq, match, mismatch, gap)
 
         if score > rev_score:
-            aligned_amplicons.append(amplicon)
+            oriented_amplicons.append(amplicon)
         else:
-            aligned_amplicons.append(f"{amp_header}\n{reverse_complement(amp_seq)}")
-            # print(f">{amp_header}\n{reverse_complement(amp_seq)}")
+            oriented_amplicons.append(f"{amp_header}\n{reverse_complement(amp_seq)}")
 
-for aln_amp in aligned_amplicons:
-    print(aln_amp)
+    return oriented_amplicons
 
+def process_args():
+    """
+    parse command-line arguments
 
-# ./magop.py -a ex12_data/assemblies/* -p ex12_data/primers/general_16S_515f_806r.fna -r ex12_data/reads/* -s ex12_data/refs/V4.fna > readmapping/aligned_v4.fna   
-# muscle -align readmapping/aligned_v4.fna -output readmapping/multi_aligned_v4.txt
-# iqtree2 -s readmapping/multi_aligned_v4.txt --prefix readmapping/ml_tree --quiet -redo
-# gotree reroot midpoint -i readmapping/ml_tree.treefile -o readmapping/rooted_ml_tree
+    Returns:
+        Namespace containing parsed arguments
+    """
+    #accept and parse command-line arguments
+    parser = argparse.ArgumentParser(prog="magop.py", 
+                                    description=f'''Infer phylogenetic relationship among given organisms using paired-end reads or assemblies\n
+                                            Usage: magop.py [-a ASSEMBLY [ASSEMBLY ...]] -p PRIMERS [-r READS [READS ...]] [-s REF_SEQS]
+                                            [--max-amplicon-size] [--match] [--mismatch] [--gap]''')
 
+    parser.add_argument(
+        "-a", "--assemblies",
+        help="Assembly files as space separated list or directory conatining them in FASTA format",
+        dest="assemblies",
+        type=str,
+        nargs='*',
+        required=False
+    )
 
+    parser.add_argument(
+        "-r", "--reads",
+        help="PE Illumina reads as space separated list or directory conatining them in FASTQ format",
+        dest="reads",
+        type=str,
+        nargs='*',
+        required=False
+    )
 
+    parser.add_argument(
+        "-p", "--primer-file",
+        help="Path to the primer file",
+        dest="primer",
+        type=str,
+        nargs=1,
+        required=True
+    )
 
+    parser.add_argument(
+        "-s", "--reference",
+        help="File path to Reference FASTA. Mandatory with FASTQ file inputs",
+        dest="ref",
+        type=str,
+        nargs='*',
+        required=False
+    )
 
-        
+    parser.add_argument(
+        "--max-amplicon-size",
+        help="maximum amplicon size for isPCR",
+        dest="max_amplicon_size",
+        type=int,
+        default=2000,
+        required=False
+    )
 
+    parser.add_argument(
+        "--match",
+        help="match score to use in alignment",
+        dest="match",
+        type=int,
+        default=1,
+        required=False
+        )
 
+    parser.add_argument(
+        "--mismatch",
+        help="mismatch penalty to use in alignment",
+        dest="mismatch",
+        type=int,
+        default=-1,
+        required=False
+    )
 
+    parser.add_argument(
+        "--gap",
+        help="gap penalty to use in alignment",
+        dest="gap",
+        type=int,
+        default=-1,
+        required=False
+    )
+
+    args = parser.parse_args()
+    return args
+
+def main():
+    args = process_args()
+    amplicon_list = []
+
+    if args.assemblies:
+        assembly_amplicons = handle_assemblies(args.primer[0], args.assemblies, args.max_amplicon_size)
+        amplicon_list.extend(assembly_amplicons)
+
+    if args.reads:
+        if not args.ref:
+            raise Exception("Reference file is mandatory with FASTQ input")
+        reads_amplicons = handle_reads(args.primer[0], args.reads, args.ref[0], args.max_amplicon_size)
+        amplicon_list.extend(reads_amplicons)
+        ref_amplicons = handle_references(args.primer[0], args.ref[0], args.max_amplicon_size)
+        amplicon_list.extend(ref_amplicons)
+
+    oriented_amplicons = orient_amplicons(amplicon_list, args.match, args.mismatch, args.gap)
+    for amp in oriented_amplicons:
+        print(amp)
+
+if __name__ == "__main__":
+    main()
+
+#USAGE:
+# ./phyl_analysis.py -a ex12_data/assemblies/* -p ex12_data/primers/general_16S_515f_806r.fna -r ex12_data/reads/* -s ex12_data/refs/V4.fna > readmapping/outputs/aligned_v4.fna   
+# multi-sequence alignment  - muscle -align readmapping/outputs/aligned_v4.fna -output readmapping/outputs/multi_aligned_v4.txt
+# generate phylogenetic tree - iqtree2 -s readmapping/outputs/multi_aligned_v4.txt --prefix readmapping/outputs/ml_tree --quiet -redo
+# mid-point rooting tree - gotree reroot midpoint -i readmapping/outputs/ml_tree.treefile -o readmapping/outputs/rooted_ml_tree
