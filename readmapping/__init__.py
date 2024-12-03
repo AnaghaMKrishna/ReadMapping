@@ -1,1 +1,1 @@
-import readmapping
+from readmapping import process_sam
