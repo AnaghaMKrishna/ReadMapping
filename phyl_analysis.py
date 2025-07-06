@@ -66,7 +66,7 @@ def handle_reads(primer_path:str, reads_path:list[str], ref_path:str, max_amplic
         accession = (re.findall(r"[A-Za-z0-9]*/*([A-Za-z0-9]+)_[12].fastq", read_file))[0]
         matching_reads[accession].append(read_file)
     for accession, pe_reads in matching_reads.items():
-        if len(pe_reads) != 2 or ("_1" not in pe_reads[0] and "_2" not in pe_reads[1]): #error if reads are not paired
+        if len(pe_reads) != 2 or ("_1" not in pe_reads[0] and "_2" not in pe_reads[1]) or ("_1" not in pe_reads[1] and "_2" not in pe_reads[0]): #error if reads are not paired
             raise Exception(f"Read files for {accession} is not paired. Input paired-end FASTQ files")        
 
     with TemporaryDirectory() as sam_tempdir:
